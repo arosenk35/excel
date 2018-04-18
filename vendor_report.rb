@@ -11,19 +11,16 @@ class PrintInvDetails
 
   dw_database_url = 'postgres://cangaroo:M7nEj4dN9UbcZkxE@trade-dwh.ckj3pghgzqvr.us-east-1.rds.amazonaws.com:5432/dwh'
   @connection = PG.connect(dw_database_url)
-
-  #remittance
   @bill_status='Paid In Full'
 
-  #prelim
-  #@bill_status='Open'
 
-  def self.generate_vendor_report(vendor,check_number,check_date)
+  def self.generate_vendor_report(vendor,check_number,check_date,s_vendor_id,ns_vendor_id)
     # Create a new Excel workbook
     doc_vendor=vendor.upcase
     doc_vendor.gsub!(/[^0-9A-Za-z]/, '')
-    doc_date=if check_date.nil? then Date.today.to_s else check_date[0..9] end
-    docname = 'TRADE_'+ doc_vendor + '_' + doc_date + '.xlsx'
+    doc_date= if check_date.nil? then Date.today.to_s else check_date[0..9] end
+    doc_type= if @bill_status=='Open' then 'PRELIM' else 'TRADE' end
+    docname = doc_type + '_'+ s_vendor_id + '_' + doc_vendor + '_' + doc_date + '.xlsx'
     workbook = WriteXLSX.new(docname)
 
     @format_total = workbook.add_format(
@@ -44,8 +41,8 @@ class PrintInvDetails
     @money_format = workbook.add_format(num_format: '$#,##0.00')
     @date_format  = workbook.add_format(num_format: 'mm/dd/yyyy', align: 'left')
 
-    print_remittance_summary(workbook, vendor,check_number)
-    print_remittance(workbook, vendor,check_number)
+    print_remittance_summary(workbook, ns_vendor_id,check_number)
+    print_remittance(workbook, ns_vendor_id,check_number)
 
     workbook.close
   end
@@ -175,7 +172,7 @@ class PrintInvDetails
                         unit_cost::numeric, order_number, shipment_number, firstname,
                         lastname, tracking_url
                     FROM public.netsuite_remittance_details_vw
-                        where vendor='#{vendor}' and
+                        where ns_vendor_id='#{vendor}' and
                         (check_number='#{check_number}' or check_number is null) and
                         bill_status='#{@bill_status}'
                         order by 1,2,3,4,5,6
@@ -189,7 +186,7 @@ class PrintInvDetails
                description,unit_cost::numeric,
                     sum(bill_qty) bill_qty, sum(bill_amt) bill_amt
                     FROM public.netsuite_remittance_details_vw
-                        where vendor='#{vendor}' and
+                        where ns_vendor_id='#{vendor}' and
                         (check_number='#{check_number}' or check_number is null) and
                         bill_status='#{@bill_status}'
                         group by 1,2,3,4,5,6
@@ -201,7 +198,7 @@ class PrintInvDetails
   def self.get_remittance_vendor(connection)
     sql = <<-eosql
     SET CLIENT_ENCODING TO 'utf8';
-                SELECT  distinct vendor, check_number,check_date
+                SELECT  distinct vendor, check_number,check_date, s_vendor_id,ns_vendor_id
                     FROM public.netsuite_remittance_details_vw
                     where bill_status='#{@bill_status}'
                         --where not printed
@@ -209,19 +206,28 @@ class PrintInvDetails
     connection.exec sql
   end
 
-  def self.generate_remittance
+  def self.generate_remittance(type)
+    @bill_status =if type=='prelim' then
+      'Open'
+    else
+     'Paid In Full' end
+
+      #prelim
+      #@bill_status='Open'
       data=get_remittance_vendor(@connection)
       data.each do |record|
         ### need to only print dropship vendors .... requires fix
         #escape quote for postgress
-        vendor=record['vendor'].gsub("'","''")
+        vendor=record['vendor']
         check_number=record['check_number']
         check_date=record['check_date']
-        generate_vendor_report(vendor, check_number,check_date)
+        s_vendor_id=record['s_vendor_id']
+        ns_vendor_id=record['ns_vendor_id']
+        generate_vendor_report(vendor, check_number,check_date,s_vendor_id,ns_vendor_id)
       end
   end
 end
 ###chcp is windows machine issue
 `chcp 65001`
-
-PrintInvDetails.generate_remittance
+#PrintInvDetails.generate_remittance('prelim')
+PrintInvDetails.generate_remittance('trade')

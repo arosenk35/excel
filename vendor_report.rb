@@ -3,7 +3,6 @@
 require 'rubygems'
 require 'write_xlsx'
 require 'pg'
-require 'date'
 require 'byebug'
 include Writexlsx::Utility
 
@@ -13,9 +12,18 @@ class PrintInvDetails
   dw_database_url = 'postgres://cangaroo:M7nEj4dN9UbcZkxE@trade-dwh.ckj3pghgzqvr.us-east-1.rds.amazonaws.com:5432/dwh'
   @connection = PG.connect(dw_database_url)
 
-  def self.generate_vendor_report(vendor)
+  #remittance
+  @bill_status='Paid In Full'
+
+  #prelim
+  #@bill_status='Open'
+
+  def self.generate_vendor_report(vendor,check_number,check_date)
     # Create a new Excel workbook
-    docname = vendor + Date.today.to_s + '.xlsx'
+    doc_vendor=vendor.upcase
+    doc_vendor.gsub!(/[^0-9A-Za-z]/, '')
+    doc_date=if check_date.nil? then Date.today.to_s else check_date[0..9] end
+    docname = 'TRADE_'+ doc_vendor + '_' + doc_date + '.xlsx'
     workbook = WriteXLSX.new(docname)
 
     @format_total = workbook.add_format(
@@ -36,78 +44,106 @@ class PrintInvDetails
     @money_format = workbook.add_format(num_format: '$#,##0.00')
     @date_format  = workbook.add_format(num_format: 'mm/dd/yyyy', align: 'left')
 
-    print_remittance(workbook, vendor)
-    print_remittance_summary(workbook, vendor)
+    print_remittance_summary(workbook, vendor,check_number)
+    print_remittance(workbook, vendor,check_number)
 
     workbook.close
   end
 
   # Remittance Datilas Report
-  def self.print_remittance(workbook, vendor)
-    data = get_remittance_details(@connection, vendor)
+  def self.print_remittance(workbook, vendor, check_number)
+    data = get_remittance_details(@connection, vendor, check_number)
+    return unless !data.nil?
     worksheet = workbook.add_worksheet('Remittance Details')
 
     layout = [
-      { field: 'vendor', offset: 0, header: 'Supplier' },
-      { field: 'check_date', offset: 0, header: 'Check Date' },
-      { field: 'check_number', offset: 0, header: 'ACH/Chk Ref' },
-      { field: 'charge_type', offset: 0, header: 'Charge Type' },
-      { field: 'invoice_id', offset: 0, header: 'Invoice Id' },
+      { field: 'charge_type', offset: 0, header: 'Transaction Type' },
+      { field: 'invoice_id', offset: 0, header: 'Trade Invoice Id' },
       { field: 'invoice_date', offset: 0, header: 'Shipment Date', format: @date_format },
       { field: 'week', offset: 0, header: 'Week Nbr' },
       { field: 'firstname', offset: 0, header: 'Fist Name' },
       { field: 'lastname', offset: 0, header: 'Last Name' },
-      { field: 'order_number', offset: 0, header: 'Order Nbr' },
-      { field: 'shipment_number', offset: 0, header: 'Shipment Nbr' },
-      { field: 'sku', offset: 2, header: 'sku' },
-      { field: 'unit_cost', offset: 0, header: 'Unit Cost', format: @money_format, type: 'float' },
+      { field: 'shipment_number', offset: 0, header: 'Roaster Order Nbr' },
       { field: 'description', offset: 0, header: 'Description' },
       { field: 'tracking_url', offset: 0, header: 'Tracking', format: @url_format },
-      { field: 'bill_amt', offset: 0, header: 'Gross', format: @money_format, type: 'float', total: true },
-      { field: 'bill_qty', offset: 0, header: 'Bags/Qty', total: true }
+      { field: 'bill_qty', offset: 0, header: 'Bags/Qty', total: true },
+      { field: 'unit_cost', offset: 0, header: 'Unit Cost', format: @money_format, type: 'float' },
+      { field: 'bill_amt', offset: 0, header: 'Gross', format: @money_format, type: 'float', total: true }
     ]
+
+    vert_layout = [
+      { field: 'vendor', offset: 0, header: 'Roaster:' },
+      { field: 'check_date', offset: 0, header: 'Payment Date:' }
+    ]
+
+    @row=0
+    worksheet.insert_image('A1','..\cangaroo\app\excel\trade-dark.jpg')
+    @row+=3
+
+    print_vertical_header(data, vert_layout, worksheet)
     print_std_report(data, layout, worksheet)
   end
 
   #remmitance summary report
-  def self.print_remittance_summary(workbook, vendor)
-    data = get_remittance_summary(@connection, vendor)
-    worksheet = workbook.add_worksheet('Remmitance Summary')
+  def self.print_remittance_summary(workbook, vendor,check_number)
+    data = get_remittance_summary(@connection, vendor,check_number)
+    return unless !data.nil?
+    worksheet = workbook.add_worksheet('Remittance Summary')
     layout = [
-      { field: 'vendor', offset: 0, header: 'Supplier' },
-      { field: 'charge_type', offset: 0, header: 'Charge Type' },
-      { field: 'week', offset: 0, header: 'Week Nbr' },
-      { field: 'bill_amt', offset: 0, header: 'Gross', format: @money_format, type: 'float', total: true },
-      { field: 'bill_qty', offset: 0, header: 'Bags/Qty', total: true }
+      { field: 'charge_type', offset: 0, header: 'Transaction Type' },
+      { field: 'description', offset: 0, header: 'Description' },
+      { field: 'bill_qty', offset: 0, header: 'Bags/Qty', total: true },
+      { field: 'unit_cost', offset: 0, header: 'Unit Cost', format: @money_format, type: 'float' },
+      { field: 'bill_amt', offset: 0, header: 'Gross', format: @money_format, type: 'float', total: true }
     ]
 
+    vert_layout = [
+      { field: 'vendor', offset: 0, header: 'Roaster:' },
+      { field: 'check_date', offset: 0, header: 'Payment Date:' }
+    ]
+
+    @row=0
+    worksheet.insert_image('A1','..\cangaroo\app\excel\trade-dark.jpg')
+    @row+=3
+    print_vertical_header(data, vert_layout, worksheet)
     print_std_report(data, layout, worksheet)
   end
 
   # standard report layout emgine
   def self.print_std_report(data, layout, worksheet)
-    col = row = 0
+    col =0
     # print header
-    print_header(0, layout, worksheet)
-    last_row = 1
-
+    print_header(layout, worksheet)
     # print lines
-    start = last_row
     data.each_with_index do |record, index|
-      print_line(record, start + index, layout, worksheet)
-      last_row = start + index
-    end
+      print_line(record, @row, layout, worksheet)
+      @row+=1
+      end
 
     # print totals
-    print_totals(last_row, layout, worksheet)
+    print_totals(layout, worksheet)
   end
 
-  def self.print_header(row, layout, worksheet)
+  def self.print_header(layout, worksheet)
     offset=0
     layout.each_with_index do |column, index|
       offset += column[:offset].to_i
-      worksheet.write(row, index + offset, column[:header], @format_heading)
+      worksheet.write(@row, index + offset, column[:header], @format_heading)
     end
+    @row +=1
+  end
+
+  def self.print_vertical_header(data, layout, worksheet)
+    if @bill_status=='Open'
+      worksheet.write(@row, 4, 'Prelim Remittance',  @format_total)
+    end
+
+    layout.each do |column|
+      worksheet.write(@row, 0, column[:header], @format_heading)
+      worksheet.write(@row, 1, (column[:type] == 'float' ? data.first[column[:field]].to_f : data.first[column[:field]]), column[:format])
+     @row+=1
+    end
+    @row+=1
   end
 
   def self.print_line(record, row, layout, worksheet)
@@ -118,50 +154,56 @@ class PrintInvDetails
     end
   end
 
-  def self.print_totals(last_row, layout, worksheet)
-    start = last_row + 2
+  def self.print_totals(layout, worksheet)
+    start = @row + 1
     offset=0
     layout.each_with_index do |column, index|
       offset += column[:offset].to_i
       next unless column[:total] == true
       worksheet.write(start, 0, 'Totals', @format_total)
-      sum = '=SUM(' + xl_rowcol_to_cell(1, index + offset) + ':' + xl_rowcol_to_cell(last_row, index + offset) + ')'
+      sum = '=SUM(' + xl_rowcol_to_cell(1, index + offset) + ':' + xl_rowcol_to_cell(@row, index + offset) + ')'
       worksheet.write(start, index + offset, sum, column[:format])
     end
   end
 
-  def self.get_remittance_details(connection, vendor)
+  def self.get_remittance_details(connection, vendor,check_number)
     sql = <<-eosql
-                SELECT  vendor, charge_type, check_number, check_date, invoice_id,
+                SELECT  vendor, charge_type, check_number, to_char(check_date,'mm/dd/yyyy') check_date, invoice_id,
                         to_char(invoice_date,'mm/dd/yyyy') invoice_date,
                         date_part('week',invoice_date) week,
                         check_amt, sku, description, bill_qty, bill_amt, shipment_qty,
                         unit_cost::numeric, order_number, shipment_number, firstname,
                         lastname, tracking_url
                     FROM public.netsuite_remittance_details_vw
-                        where vendor='#{vendor}'
+                        where vendor='#{vendor}' and
+                        (check_number='#{check_number}' or check_number is null) and
+                        bill_status='#{@bill_status}'
                         order by 1,2,3,4,5,6
             eosql
     connection.exec sql
   end
 
-  def self.get_remittance_summary(connection, vendor)
+  def self.get_remittance_summary(connection, vendor,check_number)
     sql = <<-eosql
-                SELECT  vendor, charge_type,
-                    date_part('week',invoice_date) week,
+                SELECT  vendor, charge_type,check_number, to_char(check_date,'mm/dd/yyyy') check_date,
+               description,unit_cost::numeric,
                     sum(bill_qty) bill_qty, sum(bill_amt) bill_amt
                     FROM public.netsuite_remittance_details_vw
-                        where vendor='#{vendor}'
-                        group by 1,2,3
-                        order by 1,2,3
+                        where vendor='#{vendor}' and
+                        (check_number='#{check_number}' or check_number is null) and
+                        bill_status='#{@bill_status}'
+                        group by 1,2,3,4,5,6
+                        order by 1,2,3,4,5,6
             eosql
     connection.exec sql
   end
 
   def self.get_remittance_vendor(connection)
     sql = <<-eosql
-                SELECT  distinct vendor, check_number, check_date
+    SET CLIENT_ENCODING TO 'utf8';
+                SELECT  distinct vendor, check_number,check_date
                     FROM public.netsuite_remittance_details_vw
+                    where bill_status='#{@bill_status}'
                         --where not printed
             eosql
     connection.exec sql
@@ -170,12 +212,16 @@ class PrintInvDetails
   def self.generate_remittance
       data=get_remittance_vendor(@connection)
       data.each do |record|
-        ### need to only print drpship vendors .... requires fix
-        #escpape quote for postgress
+        ### need to only print dropship vendors .... requires fix
+        #escape quote for postgress
         vendor=record['vendor'].gsub("'","''")
-        generate_vendor_report(vendor)
+        check_number=record['check_number']
+        check_date=record['check_date']
+        generate_vendor_report(vendor, check_number,check_date)
       end
   end
 end
+###chcp is windows machine issue
+`chcp 65001`
 
 PrintInvDetails.generate_remittance

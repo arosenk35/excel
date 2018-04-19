@@ -3,7 +3,6 @@
 require 'rubygems'
 require 'write_xlsx'
 require 'pg'
-require 'byebug'
 include Writexlsx::Utility
 
 class PrintInvDetails
@@ -173,7 +172,7 @@ class PrintInvDetails
                         lastname, tracking_url
                     FROM public.netsuite_remittance_details_vw
                         where ns_vendor_id='#{vendor}' and
-                        (check_number='#{check_number}' or check_number is null) and
+                        (check_number='#{check_number}' or ( check_number is null and '#{check_number}'='')) and
                         bill_status='#{@bill_status}'
                         order by 1,2,3,4,5,6
             eosql
@@ -187,7 +186,7 @@ class PrintInvDetails
                     sum(bill_qty) bill_qty, sum(bill_amt) bill_amt
                     FROM public.netsuite_remittance_details_vw
                         where ns_vendor_id='#{vendor}' and
-                        (check_number='#{check_number}' or check_number is null) and
+                        (check_number='#{check_number}' or (check_number is null and '#{check_number}'='')) and
                         bill_status='#{@bill_status}'
                         group by 1,2,3,4,5,6
                         order by 1,2,3,4,5,6
@@ -198,22 +197,21 @@ class PrintInvDetails
   def self.get_remittance_vendor(connection)
     sql = <<-eosql
     SET CLIENT_ENCODING TO 'utf8';
-                SELECT  distinct vendor, check_number,check_date, s_vendor_id,ns_vendor_id
-                    FROM public.netsuite_remittance_details_vw
+                SELECT  distinct r.vendor, r.check_number,r.check_date, r.s_vendor_id,r.ns_vendor_id
+                    FROM public.netsuite_remittance_details_vw r
                     where bill_status='#{@bill_status}'
-                        --where not printed
+                    -----and check_number not in (select check_number from table.emailed e where r.check_number=e.check_number)
             eosql
     connection.exec sql
   end
 
   def self.generate_remittance(type)
-    @bill_status =if type=='prelim' then
-      'Open'
-    else
-     'Paid In Full' end
+    @bill_status =if type.downcase == 'remittance'
+                    'Paid In Full'
+                  else
+                    'Open'
+                  end
 
-      #prelim
-      #@bill_status='Open'
       data=get_remittance_vendor(@connection)
       data.each do |record|
         ### need to only print dropship vendors .... requires fix
@@ -230,4 +228,4 @@ end
 ###chcp is windows machine issue
 `chcp 65001`
 #PrintInvDetails.generate_remittance('prelim')
-PrintInvDetails.generate_remittance('trade')
+PrintInvDetails.generate_remittance('remittance')

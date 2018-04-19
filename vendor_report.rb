@@ -13,7 +13,7 @@ class PrintInvDetails
   @bill_status='Paid In Full'
 
 
-  def self.generate_vendor_report(vendor,check_number,check_date,s_vendor_id,ns_vendor_id)
+  def self.generate_vendor_report(vendor,payment_id,check_date,s_vendor_id,ns_vendor_id)
     # Create a new Excel workbook
     doc_vendor=vendor.upcase
     doc_vendor.gsub!(/[^0-9A-Za-z]/, '')
@@ -40,15 +40,15 @@ class PrintInvDetails
     @money_format = workbook.add_format(num_format: '$#,##0.00')
     @date_format  = workbook.add_format(num_format: 'mm/dd/yyyy', align: 'left')
 
-    print_remittance_summary(workbook, ns_vendor_id,check_number)
-    print_remittance(workbook, ns_vendor_id,check_number)
+    print_remittance_summary(workbook, ns_vendor_id,payment_id)
+    print_remittance(workbook, ns_vendor_id,payment_id)
 
     workbook.close
   end
 
   # Remittance Datilas Report
-  def self.print_remittance(workbook, vendor, check_number)
-    data = get_remittance_details(@connection, vendor, check_number)
+  def self.print_remittance(workbook, vendor, payment_id)
+    data = get_remittance_details(@connection, vendor, payment_id)
     return unless !data.nil?
     worksheet = workbook.add_worksheet('Remittance Details')
 
@@ -81,8 +81,8 @@ class PrintInvDetails
   end
 
   #remmitance summary report
-  def self.print_remittance_summary(workbook, vendor,check_number)
-    data = get_remittance_summary(@connection, vendor,check_number)
+  def self.print_remittance_summary(workbook, vendor,payment_id)
+    data = get_remittance_summary(@connection, vendor,payment_id)
     return unless !data.nil?
     worksheet = workbook.add_worksheet('Remittance Summary')
     layout = [
@@ -162,9 +162,9 @@ class PrintInvDetails
     end
   end
 
-  def self.get_remittance_details(connection, vendor,check_number)
+  def self.get_remittance_details(connection, vendor,payment_id)
     sql = <<-eosql
-                SELECT  vendor, charge_type, check_number, to_char(check_date,'mm/dd/yyyy') check_date, invoice_id,
+                SELECT  vendor, charge_type, to_char(check_date,'mm/dd/yyyy') check_date, invoice_id,
                         to_char(invoice_date,'mm/dd/yyyy') invoice_date,
                         date_part('week',invoice_date) week,
                         check_amt, sku, description, bill_qty, bill_amt, shipment_qty,
@@ -172,24 +172,24 @@ class PrintInvDetails
                         lastname, tracking_url
                     FROM public.netsuite_remittance_details_vw
                         where ns_vendor_id='#{vendor}' and
-                        (check_number='#{check_number}' or ( check_number is null and '#{check_number}'='')) and
-                        bill_status='#{@bill_status}'
-                        order by 1,2,3,4,5,6
+                        (payment_id='#{payment_id}' or ( payment_id is null and '#{payment_id}'=''))
+                        and bill_status='#{@bill_status}'
+                        order by 1,2,3,4,5
             eosql
     connection.exec sql
   end
 
-  def self.get_remittance_summary(connection, vendor,check_number)
+  def self.get_remittance_summary(connection, vendor,payment_id)
     sql = <<-eosql
-                SELECT  vendor, charge_type,check_number, to_char(check_date,'mm/dd/yyyy') check_date,
+                SELECT  vendor, charge_type, to_char(check_date,'mm/dd/yyyy') check_date,
                description,unit_cost::numeric,
                     sum(bill_qty) bill_qty, sum(bill_amt) bill_amt
                     FROM public.netsuite_remittance_details_vw
                         where ns_vendor_id='#{vendor}' and
-                        (check_number='#{check_number}' or (check_number is null and '#{check_number}'='')) and
-                        bill_status='#{@bill_status}'
-                        group by 1,2,3,4,5,6
-                        order by 1,2,3,4,5,6
+                        (payment_id='#{payment_id}' or (payment_id is null and '#{payment_id}'=''))
+                        and bill_status='#{@bill_status}'
+                        group by 1,2,3,4,5
+                        order by 1,2,3,4,5
             eosql
     connection.exec sql
   end
@@ -197,10 +197,10 @@ class PrintInvDetails
   def self.get_remittance_vendor(connection)
     sql = <<-eosql
     SET CLIENT_ENCODING TO 'utf8';
-                SELECT  distinct r.vendor, r.check_number,r.check_date, r.s_vendor_id,r.ns_vendor_id
+                SELECT  distinct r.vendor, r.payment_id,r.check_date, r.s_vendor_id,r.ns_vendor_id
                     FROM public.netsuite_remittance_details_vw r
-                    where bill_status='#{@bill_status}'
-                    -----and check_number not in (select check_number from table.emailed e where r.check_number=e.check_number)
+                        where bill_status='#{@bill_status}'
+                    -----and payment_id not in (select payment_id from table.emailed e where r.payment_id=e.payment_id)
             eosql
     connection.exec sql
   end
@@ -214,18 +214,18 @@ class PrintInvDetails
 
       data=get_remittance_vendor(@connection)
       data.each do |record|
-        ### need to only print dropship vendors .... requires fix
-        #escape quote for postgress
+        # we only only print where vendor_category = 7/inventory(=dropship) all other statements run the other way (locked in sql view)
+        # use payment id not check as wire transfer/on deposits do not fill in the check number
         vendor=record['vendor']
-        check_number=record['check_number']
+        payment_id=record['payment_id']
         check_date=record['check_date']
         s_vendor_id=record['s_vendor_id']
         ns_vendor_id=record['ns_vendor_id']
-        generate_vendor_report(vendor, check_number,check_date,s_vendor_id,ns_vendor_id)
+        generate_vendor_report(vendor, payment_id, check_date, s_vendor_id, ns_vendor_id)
       end
   end
 end
 ###chcp is windows machine issue
-`chcp 65001`
+`chcp 65001` if Gem.win_platform?
 #PrintInvDetails.generate_remittance('prelim')
 PrintInvDetails.generate_remittance('remittance')

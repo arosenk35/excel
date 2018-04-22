@@ -13,15 +13,16 @@ class PrintInvDetails
   @bill_status='Paid In Full'
 
 
-  def self.generate_vendor_report(vendor,payment_id,check_date,s_vendor_id,ns_vendor_id)
+  def self.generate_vendor_report(vendor,payment_id,check_date,s_vendor_id,ns_vendor_id,type)
     # Create a new Excel workbook
     doc_vendor=vendor.upcase
     doc_vendor.gsub!(/[^0-9A-Za-z]/, '')
     doc_date= if check_date.nil? then Date.today.to_s else check_date[0..9] end
-    doc_type= if @bill_status=='Open' then 'PRELIM' else 'TRADE' end
+    doc_type= if type=='remittance' then 'TRADE' else 'PRELIM'  end
     docname = doc_type + '_'+ s_vendor_id + '_' + doc_vendor + '_' + doc_date + '.xlsx'
     workbook = WriteXLSX.new(docname)
 
+    #set std formats
     @format_total = workbook.add_format(
       bold: 1,
       border: 1
@@ -40,10 +41,17 @@ class PrintInvDetails
     @money_format = workbook.add_format(num_format: '$#,##0.00')
     @date_format  = workbook.add_format(num_format: 'mm/dd/yyyy', align: 'left')
 
+    #print reports
     print_remittance_summary(workbook, ns_vendor_id,payment_id)
     print_remittance(workbook, ns_vendor_id,payment_id)
 
     workbook.close
+
+    #mark payemnts emailed
+    if type.downcase == 'remittance'
+        mark_remittance_emailed(@connection,payment_id)
+    end
+
   end
 
   # Remittance Datilas Report
@@ -73,7 +81,7 @@ class PrintInvDetails
     ]
 
     @row=0
-    worksheet.insert_image('A1','..\cangaroo\app\excel\trade-dark.jpg')
+    worksheet.insert_image('A1','..\excel\trade-dark.jpg')
     @row+=3
 
     print_vertical_header(data, vert_layout, worksheet)
@@ -99,7 +107,7 @@ class PrintInvDetails
     ]
 
     @row=0
-    worksheet.insert_image('A1','..\cangaroo\app\excel\trade-dark.jpg')
+    worksheet.insert_image('A1','..\excel\trade-dark.jpg')
     @row+=3
     print_vertical_header(data, vert_layout, worksheet)
     print_std_report(data, layout, worksheet)
@@ -195,12 +203,21 @@ class PrintInvDetails
   end
 
   def self.get_remittance_vendor(connection)
+    #only get payments that have not been emailed
     sql = <<-eosql
     SET CLIENT_ENCODING TO 'utf8';
                 SELECT  distinct r.vendor, r.payment_id,r.check_date, r.s_vendor_id,r.ns_vendor_id
                     FROM public.netsuite_remittance_details_vw r
-                        where bill_status='#{@bill_status}'
-                    -----and payment_id not in (select payment_id from table.emailed e where r.payment_id=e.payment_id)
+                         left join cangaroo_interface.ap_emailed_remittances e on  r.payment_id=e.payment_id
+                         where bill_status='#{@bill_status}'
+                         and e.payment_id is null
+            eosql
+    connection.exec sql
+  end
+
+  def self.mark_remittance_emailed(connection,payment_id)
+    sql = <<-eosql
+            insert into cangaroo_interface.ap_emailed_remittances (payment_id) values('#{payment_id}')
             eosql
     connection.exec sql
   end
@@ -221,7 +238,7 @@ class PrintInvDetails
         check_date=record['check_date']
         s_vendor_id=record['s_vendor_id']
         ns_vendor_id=record['ns_vendor_id']
-        generate_vendor_report(vendor, payment_id, check_date, s_vendor_id, ns_vendor_id)
+        generate_vendor_report(vendor, payment_id, check_date, s_vendor_id, ns_vendor_id,type)
       end
   end
 end

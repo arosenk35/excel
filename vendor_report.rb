@@ -3,6 +3,7 @@
 require 'rubygems'
 require 'write_xlsx'
 require 'pg'
+require 'byebug'
 include Writexlsx::Utility
 
 class PrintInvDetails
@@ -12,14 +13,18 @@ class PrintInvDetails
   @connection = PG.connect(dw_database_url)
   @bill_status='Paid In Full'
 
-
-  def self.generate_vendor_report(vendor,payment_id,check_date,s_vendor_id,ns_vendor_id,type)
+  #
+  # Main ...gerenate the various reports/woksheets for each payment/vendor
+  #
+  def self.generate_vendor_report(vendor,
+                                  payment_id,
+                                  ns_vendor_id)
     # Create a new Excel workbook
     doc_vendor=vendor.upcase
     doc_vendor.gsub!(/[^0-9A-Za-z]/, '')
-    doc_date= if check_date.nil? then Date.today.to_s else check_date[0..9] end
-    doc_type= if type=='remittance' then 'TRADE' else 'PRELIM'  end
-    docname = doc_type + '_'+ s_vendor_id + '_' + doc_vendor + '_' + doc_date + '.xlsx'
+    doc_date= if @check_date.nil? then Date.today.to_s else @check_date[0..9] end
+    doc_type= if @type=='remittance' then 'TRADE' else 'PRELIM'  end
+    docname = doc_type + '_'+ @s_vendor_id + '_' + doc_vendor + '_' + doc_date + '.xlsx'
     workbook = WriteXLSX.new(docname)
 
     #set std formats
@@ -47,14 +52,15 @@ class PrintInvDetails
 
     workbook.close
 
-    #mark payemnts emailed
-    if type.downcase == 'remittance'
+    #mark paymentts emailed
+    if @type.downcase == 'remittance'
         mark_remittance_emailed(@connection,payment_id)
     end
 
   end
-
-  # Remittance Datilas Report
+  #
+  # Remittance Details Report
+  #
   def self.print_remittance(workbook, vendor, payment_id)
     data = get_remittance_details(@connection, vendor, payment_id)
     return unless !data.nil?
@@ -76,8 +82,9 @@ class PrintInvDetails
     ]
 
     vert_layout = [
-      { field: 'vendor', offset: 0, header: 'Roaster:' },
-      { field: 'check_date', offset: 0, header: 'Payment Date:' }
+      { field: 'vendor', offset: 0,       header: 'Roaster:' },
+      { field: '@max_inv_date', offset: 0, header: 'Invoices Paid Thru:' , type: 'var' },
+      { field: 'check_date', offset: 0,   header: 'Payment Date:' }
     ]
 
     @row=0
@@ -87,9 +94,10 @@ class PrintInvDetails
     print_vertical_header(data, vert_layout, worksheet)
     print_std_report(data, layout, worksheet)
   end
-
+  #
   #remmitance summary report
-  def self.print_remittance_summary(workbook, vendor,payment_id)
+  #
+  def self.print_remittance_summary(workbook, vendor, payment_id)
     data = get_remittance_summary(@connection, vendor,payment_id)
     return unless !data.nil?
     worksheet = workbook.add_worksheet('Remittance Summary')
@@ -103,6 +111,7 @@ class PrintInvDetails
 
     vert_layout = [
       { field: 'vendor', offset: 0, header: 'Roaster:' },
+      { field: '@max_inv_date', offset: 0, header: 'Invoices Paid Thru:',type:'var' },
       { field: 'check_date', offset: 0, header: 'Payment Date:' }
     ]
 
@@ -144,7 +153,15 @@ class PrintInvDetails
 
     layout.each do |column|
       worksheet.write(@row, 0, column[:header], @format_heading)
-      worksheet.write(@row, 1, (column[:type] == 'float' ? data.first[column[:field]].to_f : data.first[column[:field]]), column[:format])
+      worksheet.write(@row, 1,
+                        (if column[:type] == 'float'
+                            data.first[column[:field]].to_f
+                          elsif column[:type] == 'var'
+                            eval(column[:field])
+                          else
+                            data.first[column[:field]]
+                        end),
+                        column[:format])
      @row+=1
     end
     @row+=1
@@ -154,7 +171,13 @@ class PrintInvDetails
     offset=0
     layout.each_with_index do |column, index|
       offset += column[:offset].to_i
-      worksheet.write(row, index + offset, (column[:type] == 'float' ? record[column[:field]].to_f : record[column[:field]]), column[:format])
+      worksheet.write(row, index + offset, (if column[:type] == 'float'
+                                                record[column[:field]].to_f
+                                            elsif column[:type] == 'var'
+                                                 eval(column[:field])
+                                            else
+                                              record[column[:field]]
+                                            end), column[:format])
     end
   end
 
@@ -206,15 +229,22 @@ class PrintInvDetails
     #only get payments that have not been emailed
     sql = <<-eosql
     SET CLIENT_ENCODING TO 'utf8';
-                SELECT  distinct r.vendor, r.payment_id,r.check_date, r.s_vendor_id,r.ns_vendor_id
+                SELECT   distinct on (r.payment_id) r.payment_id,
+                r.vendor,
+                r.payment_id,
+                r.s_vendor_id,
+                r.ns_vendor_id,
+                to_char(max(invoice_date),'mm/dd/yyyy') max_inv_date
                     FROM public.netsuite_remittance_details_vw r
                          left join cangaroo_interface.ap_emailed_remittances e on  r.payment_id=e.payment_id
                          where bill_status='#{@bill_status}'
                          and e.payment_id is null
+                group by  r.payment_id,r.vendor, r.s_vendor_id,r.ns_vendor_id
             eosql
     connection.exec sql
   end
 
+  #trap invoices that have been emailed .... we do not want to create and resend them
   def self.mark_remittance_emailed(connection,payment_id)
     sql = <<-eosql
             insert into cangaroo_interface.ap_emailed_remittances (payment_id) values('#{payment_id}')
@@ -222,12 +252,17 @@ class PrintInvDetails
     connection.exec sql
   end
 
+  #
+  #loop thru open/nom emailed invoices
+  #
   def self.generate_remittance(type)
+    #set runtime options
     @bill_status =if type.downcase == 'remittance'
                     'Paid In Full'
                   else
                     'Open'
                   end
+    @type=type
 
       data=get_remittance_vendor(@connection)
       data.each do |record|
@@ -235,10 +270,16 @@ class PrintInvDetails
         # use payment id not check as wire transfer/on deposits do not fill in the check number
         vendor=record['vendor']
         payment_id=record['payment_id']
-        check_date=record['check_date']
-        s_vendor_id=record['s_vendor_id']
         ns_vendor_id=record['ns_vendor_id']
-        generate_vendor_report(vendor, payment_id, check_date, s_vendor_id, ns_vendor_id,type)
+
+        #document level variables
+        @check_date=record['check_date']
+        @s_vendor_id=record['s_vendor_id']
+        @max_inv_date=record['max_inv_date']
+
+        generate_vendor_report(vendor,
+                              payment_id,
+                              ns_vendor_id)
       end
   end
 end

@@ -229,7 +229,7 @@ class PrintInvDetails
     #only get payments that have not been emailed
     sql = <<-eosql
     SET CLIENT_ENCODING TO 'utf8';
-                SELECT   distinct on (r.payment_id) r.payment_id,
+                SELECT
                 r.vendor,
                 r.payment_id,
                 r.s_vendor_id,

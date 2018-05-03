@@ -73,6 +73,7 @@ class PrintInvDetails
       { field: 'week', offset: 0, header: 'Week Nbr' },
       { field: 'firstname', offset: 0, header: 'Fist Name' },
       { field: 'lastname', offset: 0, header: 'Last Name' },
+      { field: 'batch_id', offset: 0, header: 'Roaster Batch Id' },
       { field: 'shipment_number', offset: 0, header: 'Roaster Order Nbr' },
       { field: 'description', offset: 0, header: 'Description' },
       { field: 'tracking_url', offset: 0, header: 'Tracking', format: @url_format },
@@ -195,16 +196,16 @@ class PrintInvDetails
 
   def self.get_remittance_details(connection, vendor,payment_id)
     sql = <<-eosql
-                SELECT  vendor, charge_type, to_char(check_date,'mm/dd/yyyy') check_date, invoice_id,
+                SELECT  vendor, charge_type, to_char(coalesce(check_date,now()),'mm/dd/yyyy') check_date, invoice_id,
                         to_char(invoice_date,'mm/dd/yyyy') invoice_date,
                         date_part('week',invoice_date) week,
                         check_amt, sku, description, bill_qty, bill_amt, shipment_qty,
                         unit_cost::numeric, order_number, shipment_number, firstname,
-                        lastname, tracking_url
+                        lastname, tracking_url,batch_id
                     FROM public.netsuite_remittance_details_vw
                         where ns_vendor_id='#{vendor}' and
                         (payment_id='#{payment_id}' or ( payment_id is null and '#{payment_id}'=''))
-                        and bill_status='#{@bill_status}'
+                        and bill_status in (#{@bill_status})
                         order by 1,2,3,4,5
             eosql
     connection.exec sql
@@ -212,13 +213,13 @@ class PrintInvDetails
 
   def self.get_remittance_summary(connection, vendor,payment_id)
     sql = <<-eosql
-                SELECT  vendor, charge_type, to_char(check_date,'mm/dd/yyyy') check_date,
+                SELECT  vendor, charge_type, to_char(coalesce(check_date,now()),'mm/dd/yyyy') check_date,
                description,unit_cost::numeric,
                     sum(bill_qty) bill_qty, sum(bill_amt) bill_amt
                     FROM public.netsuite_remittance_details_vw
                         where ns_vendor_id='#{vendor}' and
                         (payment_id='#{payment_id}' or (payment_id is null and '#{payment_id}'=''))
-                        and bill_status='#{@bill_status}'
+                        and bill_status in (#{@bill_status})
                         group by 1,2,3,4,5
                         order by 1,2,3,4,5
             eosql
@@ -237,7 +238,7 @@ class PrintInvDetails
                 to_char(max(invoice_date),'mm/dd/yyyy') max_inv_date
                     FROM public.netsuite_remittance_details_vw r
                          left join cangaroo_interface.ap_emailed_remittances e on  r.payment_id=e.payment_id
-                         where bill_status='#{@bill_status}'
+                         where bill_status in (#{@bill_status})
                          and e.payment_id is null
                 group by  r.payment_id,r.vendor, r.s_vendor_id,r.ns_vendor_id
             eosql
@@ -258,9 +259,9 @@ class PrintInvDetails
   def self.generate_remittance(type)
     #set runtime options
     @bill_status =if type.downcase == 'remittance'
-                    'Paid In Full'
+                    "'Open','Paid In Full'"
                   else
-                    'Open'
+                    "'Open','Paid In Full'"
                   end
     @type=type
 

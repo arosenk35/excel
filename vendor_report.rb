@@ -3,7 +3,6 @@
 require 'rubygems'
 require 'write_xlsx'
 require 'pg'
-require 'byebug'
 include Writexlsx::Utility
 
 class PrintInvDetails
@@ -17,7 +16,6 @@ class PrintInvDetails
   # Main ...gerenate the various reports/woksheets for each payment/vendor
   #
   def self.generate_vendor_report(vendor,
-                                  payment_id,
                                   ns_vendor_id)
     # Create a new Excel workbook
     doc_vendor=vendor.upcase
@@ -47,22 +45,22 @@ class PrintInvDetails
     @date_format  = workbook.add_format(num_format: 'mm/dd/yyyy', align: 'left')
 
     #print reports
-    print_remittance_summary(workbook, ns_vendor_id,payment_id)
-    print_remittance(workbook, ns_vendor_id,payment_id)
+    print_remittance_summary(workbook, ns_vendor_id)
+    print_remittance(workbook, ns_vendor_id)
 
     workbook.close
 
     #mark paymentts emailed
     if @type.downcase == 'remittance'
-        mark_remittance_emailed(@connection,payment_id)
+      mark_remittance_emailed(@connection,ns_vendor_id)
     end
 
   end
   #
   # Remittance Details Report
   #
-  def self.print_remittance(workbook, vendor, payment_id)
-    data = get_remittance_details(@connection, vendor, payment_id)
+  def self.print_remittance(workbook, vendor)
+    data = get_remittance_details(@connection, vendor)
     return unless !data.nil?
     worksheet = workbook.add_worksheet('Remittance Details')
 
@@ -83,9 +81,9 @@ class PrintInvDetails
     ]
 
     vert_layout = [
-      { field: 'vendor', offset: 0,       header: 'Roaster:' },
+      { field: 'vendor', offset: 0, header: 'Roaster:' },
       { field: '@max_inv_date', offset: 0, header: 'Invoices Paid Thru:' , type: 'var' },
-      { field: 'check_date', offset: 0,   header: 'Payment Date:' }
+      { field: '@max_check_date', offset: 0, header: 'Payment Date:' ,type:'var'}
     ]
 
     @row=0
@@ -98,8 +96,8 @@ class PrintInvDetails
   #
   #remmitance summary report
   #
-  def self.print_remittance_summary(workbook, vendor, payment_id)
-    data = get_remittance_summary(@connection, vendor,payment_id)
+  def self.print_remittance_summary(workbook, vendor)
+    data = get_remittance_summary(@connection, vendor)
     return unless !data.nil?
     worksheet = workbook.add_worksheet('Remittance Summary')
     layout = [
@@ -113,7 +111,7 @@ class PrintInvDetails
     vert_layout = [
       { field: 'vendor', offset: 0, header: 'Roaster:' },
       { field: '@max_inv_date', offset: 0, header: 'Invoices Paid Thru:',type:'var' },
-      { field: 'check_date', offset: 0, header: 'Payment Date:' }
+      { field: '@max_check_date', offset: 0, header: 'Payment Date:' ,type:'var'}
     ]
 
     @row=0
@@ -194,31 +192,33 @@ class PrintInvDetails
     end
   end
 
-  def self.get_remittance_details(connection, vendor,payment_id)
+  def self.get_remittance_details(connection, vendor)
     sql = <<-eosql
-                SELECT  vendor, charge_type, to_char(coalesce(check_date,now()),'mm/dd/yyyy') check_date, invoice_id,
+                SELECT  vendor, charge_type, invoice_id,
                         to_char(invoice_date,'mm/dd/yyyy') invoice_date,
                         date_part('week',invoice_date) week,
                         check_amt, sku, description, bill_qty, bill_amt, shipment_qty,
                         unit_cost::numeric, order_number, shipment_number, firstname,
                         lastname, tracking_url,batch_id
-                    FROM public.netsuite_remittance_details_vw
-                        where ns_vendor_id='#{vendor}' and
-                        (payment_id='#{payment_id}' or ( payment_id is null and '#{payment_id}'=''))
+                    FROM public.netsuite_remittance_details_vw r
+                        left join cangaroo_interface.ap_emailed_remittances e on  r.payment_id=e.payment_id
+                        where ns_vendor_id='#{vendor}'
+                        and e.payment_id is null
                         and bill_status in (#{@bill_status})
                         order by 1,2,3,4,5
             eosql
     connection.exec sql
   end
 
-  def self.get_remittance_summary(connection, vendor,payment_id)
+  def self.get_remittance_summary(connection, vendor)
     sql = <<-eosql
-                SELECT  vendor, charge_type, to_char(coalesce(check_date,now()),'mm/dd/yyyy') check_date,
+                SELECT  vendor, charge_type,
                description,unit_cost::numeric,
                     sum(bill_qty) bill_qty, sum(bill_amt) bill_amt
-                    FROM public.netsuite_remittance_details_vw
-                        where ns_vendor_id='#{vendor}' and
-                        (payment_id='#{payment_id}' or (payment_id is null and '#{payment_id}'=''))
+                    FROM public.netsuite_remittance_details_vw r
+                        left join cangaroo_interface.ap_emailed_remittances e on  r.payment_id=e.payment_id
+                        where ns_vendor_id='#{vendor}'
+                        and e.payment_id is null
                         and bill_status in (#{@bill_status})
                         group by 1,2,3,4,5
                         order by 1,2,3,4,5
@@ -232,15 +232,15 @@ class PrintInvDetails
     SET CLIENT_ENCODING TO 'utf8';
                 SELECT
                 r.vendor,
-                r.payment_id,
                 r.s_vendor_id,
                 r.ns_vendor_id,
-                to_char(max(invoice_date),'mm/dd/yyyy') max_inv_date
+                to_char(max(invoice_date),'mm/dd/yyyy') max_inv_date,
+                to_char(max(check_date),'mm/dd/yyyy') max_check_date
                     FROM public.netsuite_remittance_details_vw r
                          left join cangaroo_interface.ap_emailed_remittances e on  r.payment_id=e.payment_id
                          where bill_status in (#{@bill_status})
                          and e.payment_id is null
-                group by  r.payment_id,r.vendor, r.s_vendor_id,r.ns_vendor_id
+                group by r.vendor, r.s_vendor_id,r.ns_vendor_id
             eosql
     connection.exec sql
   end
@@ -250,6 +250,7 @@ class PrintInvDetails
     sql = <<-eosql
             insert into cangaroo_interface.ap_emailed_remittances (payment_id) values('#{payment_id}')
             eosql
+    return unless !payment_id.nil?
     connection.exec sql
   end
 
@@ -258,10 +259,11 @@ class PrintInvDetails
   #
   def self.generate_remittance(type)
     #set runtime options
+    # "'Open','Paid In Full'"
     @bill_status =if type.downcase == 'remittance'
-                    "'Open','Paid In Full'"
+                    "'Paid In Full'"
                   else
-                    "'Open','Paid In Full'"
+                    "'Open'"
                   end
     @type=type
 
@@ -277,9 +279,9 @@ class PrintInvDetails
         @check_date=record['check_date']
         @s_vendor_id=record['s_vendor_id']
         @max_inv_date=record['max_inv_date']
+        @max_check_date=record['max_check_date']
 
         generate_vendor_report(vendor,
-                              payment_id,
                               ns_vendor_id)
       end
   end

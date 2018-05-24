@@ -246,11 +246,16 @@ class PrintInvDetails
   end
 
   #trap invoices that have been emailed .... we do not want to create and resend them
-  def self.mark_remittance_emailed(connection,payment_id)
+  def self.mark_remittance_emailed(connection,vendor)
     sql = <<-eosql
-            insert into cangaroo_interface.ap_emailed_remittances (payment_id) values('#{payment_id}')
+    insert into cangaroo_interface.ap_emailed_remittances (payment_id)
+    select distinct e.payment_id from public.netsuite_remittance_details_vw r
+                            left join cangaroo_interface.ap_emailed_remittances e on  r.payment_id=e.payment_id
+                      where ns_vendor_id='#{vendor}'
+                        and e.payment_id is null
+                        and bill_status in (#{@bill_status})
+                        and e.payment_id !=''
             eosql
-    return unless !payment_id.nil?
     connection.exec sql
   end
 

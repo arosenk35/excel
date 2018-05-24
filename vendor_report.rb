@@ -220,8 +220,8 @@ class PrintInvDetails
                         where ns_vendor_id='#{vendor}'
                         and e.payment_id is null
                         and bill_status in (#{@bill_status})
-                        group by 1,2,3,4,5
-                        order by 1,2,3,4,5
+                        group by 1,2,3,4
+                        order by 1,2,3,4
             eosql
     connection.exec sql
   end
